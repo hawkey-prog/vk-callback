@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VK Callback</title>
+    <title>VK Auth — Получение токена</title>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -55,10 +55,11 @@
             background: #0077ff;
             color: white;
             border: none;
-            padding: 12px 24px;
+            padding: 14px 28px;
             border-radius: 8px;
             cursor: pointer;
             font-size: 16px;
+            margin-top: 10px;
         }
         button:hover {
             background: #005bb5;
@@ -66,12 +67,18 @@
         .hidden {
             display: none;
         }
+        .small {
+            font-size: 13px;
+            color: #666;
+            margin-top: 15px;
+        }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>🔑 Получение кода авторизации VK</h1>
+        <h1>🔑 Авторизация VK</h1>
         <div id="status">Загрузка...</div>
+        <div id="action-block"></div>
 
         <div id="manual-block" class="hidden">
             <p>Если автоматическая отправка не сработала, скопируйте данные вручную:</p>
@@ -80,14 +87,43 @@
     </div>
 
     <script>
-        // ====== НАСТРОЙКА: вставьте сюда адрес вашего сервера ======
+        const CLIENT_ID = '54634256';
+        const REDIRECT_URI = 'https://hawkey-prog.github.io/vk-callback/index.html';
         const SERVER_URL = 'https://vk-bot-exchange.nastushkarom.workers.dev/vk/exchange-code';
-        // ===========================================================
+        const SCOPE = 'groups';
+        const VK_AUTH_URL = 'https://oauth.vk.com/authorize';
 
         function showStatus(html, type = '') {
             const status = document.getElementById('status');
             status.className = 'info ' + type;
             status.innerHTML = html;
+        }
+
+        function showAction(html) {
+            document.getElementById('action-block').innerHTML = html;
+        }
+
+        function base64URLEncode(buffer) {
+            let str = '';
+            const bytes = new Uint8Array(buffer);
+            for (let i = 0; i < bytes.byteLength; i++) {
+                str += String.fromCharCode(bytes[i]);
+            }
+            return btoa(str)
+                .replace(/\+/g, '-')
+                .replace(/\//g, '_')
+                .replace(/=+$/, '');
+        }
+
+        function generateCodeVerifier() {
+            const array = new Uint8Array(64);
+            crypto.getRandomValues(array);
+            return base64URLEncode(array);
+        }
+
+        async function generateCodeChallenge(verifier) {
+            const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
+            return base64URLEncode(digest);
         }
 
         function getUrlParams() {
@@ -101,58 +137,36 @@
             };
         }
 
-        function showManualData(data) {
+        function showManualData(payload) {
             document.getElementById('manual-block').classList.remove('hidden');
-            document.getElementById('manual-data').textContent = JSON.stringify(data, null, 2);
+            document.getElementById('manual-data').textContent = JSON.stringify(payload, null, 2);
         }
 
-        async function main() {
-            const params = getUrlParams();
+        async function startAuth() {
+            const codeVerifier = generateCodeVerifier();
+            const codeChallenge = await generateCodeChallenge(codeVerifier);
+            const state = generateCodeVerifier();
 
-            // Если VK вернул ошибку
-            if (params.error) {
-                showStatus(
-                    `<strong>Ошибка авторизации</strong><br>
-                     Код: <code>${params.error}</code><br>
-                     Описание: ${params.error_description || 'неизвестно'}`,
-                    'error'
-                );
-                return;
-            }
+            sessionStorage.setItem('vk_code_verifier', codeVerifier);
+            sessionStorage.setItem('vk_state', state);
 
-            // Если нет code — значит, пользователь открыл страницу просто так
-            if (!params.code) {
-                showStatus(
-                    `Ожидание авторизации...<br>
-                     Перейдите по ссылке авторизации VK, после чего сюда придёт код.`
-                );
-                return;
-            }
+            const url = `${VK_AUTH_URL}?` +
+                `client_id=${CLIENT_ID}` +
+                `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
+                `&response_type=code` +
+                `&scope=${SCOPE}` +
+                `&state=${state}` +
+                `&code_challenge=${codeChallenge}` +
+                `&code_challenge_method=S256` +
+                `&display=page` +
+                `&v=5.199`;
 
-            // Забираем code_verifier из sessionStorage
-            const codeVerifier = sessionStorage.getItem('vk_code_verifier') || '';
-            const savedState = sessionStorage.getItem('vk_state') || '';
+            window.location.href = url;
+        }
 
-            // Проверяем state на совпадение
-            if (params.state && params.state !== savedState) {
-                showStatus(
-                    `<strong>Ошибка безопасности</strong><br>
-                     Параметр state не совпадает. Возможна CSRF-атака.`,
-                    'error'
-                );
-                return;
-            }
-
-            // Формируем данные для сервера
-            const payload = {
-                code: params.code,
-                device_id: params.device_id || '',
-                code_verifier: codeVerifier,
-                state: params.state || savedState
-            };
-
+        async function sendToServer(payload) {
             showStatus(
-                `<strong>Код получен</strong><br>
+                `<strong>Код получен от VK</strong><br>
                  Отправляю данные на сервер...<br>
                  <code>${SERVER_URL}</code>`
             );
@@ -160,9 +174,7 @@
             try {
                 const response = await fetch(SERVER_URL, {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
                 });
 
@@ -174,7 +186,7 @@
 
                 showStatus(
                     `<strong>✅ Успешно!</strong><br>
-                     Сервер получил токены.<br>
+                     Сервер получил и сохранил токены VK.<br>
                      user_id: <code>${result.user_id || 'неизвестно'}</code><br>
                      access_token: <code>${result.access_token_prefix || '***'}...</code>`,
                     'success'
@@ -182,7 +194,7 @@
             } catch (err) {
                 showStatus(
                     `<strong>❌ Ошибка отправки на сервер</strong><br>
-                     Проверьте, что сервер запущен и URL правильный.<br><br>
+                     Проверьте, что сервер запущен и доступен.<br><br>
                      Ошибка:<br><pre>${err.message}</pre>`,
                     'error'
                 );
@@ -190,7 +202,52 @@
             }
         }
 
-        main();
+        async function handleCallback() {
+            const params = getUrlParams();
+
+            if (params.error) {
+                showStatus(
+                    `<strong>Ошибка авторизации VK</strong><br>
+                     Код: <code>${params.error}</code><br>
+                     Описание: ${params.error_description || 'неизвестно'}`,
+                    'error'
+                );
+                return;
+            }
+
+            if (!params.code) {
+                showStatus(
+                    `Нажмите кнопку ниже, чтобы авторизоваться через VK.<br>
+                     После авторизации вы вернётесь сюда, и код будет отправлен на сервер.`
+                );
+                showAction(`<button onclick="startAuth()">Авторизоваться через VK</button>
+                            <p class="small">После нажатия вы перейдёте на страницу авторизации VK.</p>`);
+                return;
+            }
+
+            const codeVerifier = sessionStorage.getItem('vk_code_verifier') || '';
+            const savedState = sessionStorage.getItem('vk_state') || '';
+
+            if (params.state && params.state !== savedState) {
+                showStatus(
+                    `<strong>Ошибка безопасности</strong><br>
+                     Параметр state не совпадает. Возможна CSRF-атака.`,
+                    'error'
+                );
+                return;
+            }
+
+            const payload = {
+                code: params.code,
+                device_id: params.device_id || '',
+                code_verifier: codeVerifier,
+                state: params.state || savedState
+            };
+
+            await sendToServer(payload);
+        }
+
+        handleCallback();
     </script>
 </body>
 </html>
