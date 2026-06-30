@@ -23,15 +23,21 @@ export default {
     const originUrl = 'http://89.108.78.99/vk/exchange-code';
 
     try {
+      const bodyText = await request.text();
+
+      console.log('Body from client:', bodyText);
+
       const response = await fetch(originUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: request.body,
+        body: bodyText,
       });
 
-      const body = await response.text();
+      const responseText = await response.text();
 
-      return new Response(body, {
+      console.log('Response from origin:', responseText);
+
+      return new Response(responseText, {
         status: response.status,
         headers: {
           'Content-Type': 'application/json',
@@ -39,6 +45,7 @@ export default {
         },
       });
     } catch (err) {
+      console.log('Error:', err.message);
       return new Response(JSON.stringify({ error: 'Origin unreachable', details: err.message }), {
         status: 502,
         headers: {
