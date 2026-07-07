@@ -100,4 +100,133 @@
         }
 
         function showAction(html) {
-            document
+            document.getElementById('action-block').innerHTML = html;
+        }
+
+        function generateRandomString(length) {
+            const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
+            let result = '';
+            const array = new Uint8Array(length);
+            crypto.getRandomValues(array);
+            for (let i = 0; i < length; i++) {
+                result += chars[array[i] % chars.length];
+            }
+            return result;
+        }
+
+        function getUrlParams() {
+            const params = new URLSearchParams(window.location.search);
+            return {
+                code: params.get('code'),
+                state: params.get('state'),
+                error: params.get('error'),
+                error_description: params.get('error_description'),
+            };
+        }
+
+        function showManualData(payload) {
+            document.getElementById('manual-block').classList.remove('hidden');
+            document.getElementById('manual-data').textContent = JSON.stringify(payload, null, 2);
+        }
+
+        function startAuth() {
+            const state = generateRandomString(32);
+            sessionStorage.setItem('vk_state', state);
+
+            const url = `${VK_AUTH_URL}?` +
+                `client_id=${CLIENT_ID}` +
+                `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
+                `&response_type=code` +
+                `&scope=${SCOPE}` +
+                `&state=${state}` +
+                `&display=page` +
+                `&v=5.199`;
+
+            window.location.href = url;
+        }
+
+        async function sendToServer(payload) {
+            showStatus(
+                `<strong>Код получен от VK</strong><br>
+                 Отправляю данные на сервер...<br>
+                 <code>${SERVER_URL}</code>`
+            );
+
+            try {
+                const response = await fetch(SERVER_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                const result = await response.json();
+
+                if (!response.ok || result.error) {
+                    throw new Error(JSON.stringify(result, null, 2));
+                }
+
+                showStatus(
+                    `<strong>✅ Успешно!</strong><br>
+                     Сервер получил и сохранил токены VK.<br>
+                     user_id: <code>${result.user_id || 'неизвестно'}</code><br>
+                     access_token: <code>${result.access_token_prefix || '***'}...</code><br>
+                     scope: <code>${result.scope || 'неизвестно'}</code>`,
+                    'success'
+                );
+            } catch (err) {
+                showStatus(
+                    `<strong>❌ Ошибка отправки на сервер</strong><br>
+                     Проверьте, что сервер запущен и доступен.<br><br>
+                     Ошибка:<br><pre>${err.message}</pre>`,
+                    'error'
+                );
+                showManualData(payload);
+            }
+        }
+
+        async function handleCallback() {
+            const params = getUrlParams();
+
+            if (params.error) {
+                showStatus(
+                    `<strong>Ошибка авторизации VK</strong><br>
+                     Код: <code>${params.error}</code><br>
+                     Описание: ${params.error_description || 'неизвестно'}`,
+                    'error'
+                );
+                return;
+            }
+
+            if (!params.code) {
+                showStatus(
+                    `Нажмите кнопку ниже, чтобы авторизоваться через VK.<br>
+                     После авторизации вы вернётесь сюда, и код будет отправлен на сервер.`
+                );
+                showAction(`<button onclick="startAuth()">Авторизоваться через VK</button>
+                            <p class="small">После нажатия вы перейдёте на страницу авторизации VK.</p>`);
+                return;
+            }
+
+            const savedState = sessionStorage.getItem('vk_state') || '';
+
+            if (params.state && params.state !== savedState) {
+                showStatus(
+                    `<strong>Ошибка безопасности</strong><br>
+                     Параметр state не совпадает. Возможна CSRF-атака.`,
+                    'error'
+                );
+                return;
+            }
+
+            const payload = {
+                code: params.code,
+                state: params.state || savedState
+            };
+
+            await sendToServer(payload);
+        }
+
+        handleCallback();
+    </script>
+</body>
+</html>
