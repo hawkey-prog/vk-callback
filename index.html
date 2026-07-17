@@ -102,6 +102,7 @@
             document.getElementById('action-block').innerHTML = html;
         }
 
+        // Генерация случайной строки для state и code_verifier
         function generateRandomString(length) {
             const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
             let result = '';
@@ -113,11 +114,13 @@
             return result;
         }
 
+        // PKCE: создание code_challenge из code_verifier
         async function createCodeChallenge(codeVerifier) {
             const encoder = new TextEncoder();
             const data = encoder.encode(codeVerifier);
             const hashBuffer = await crypto.subtle.digest('SHA-256', data);
             const hashArray = Array.from(new Uint8Array(hashBuffer));
+            // BASE64URL-ENCODE (без паддинга)
             const base64 = btoa(String.fromCharCode(...hashArray));
             return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
         }
@@ -139,12 +142,15 @@
         }
 
         async function startAuth() {
+            // Генерация PKCE параметров
             const codeVerifier = generateRandomString(64);
             const codeChallenge = await createCodeChallenge(codeVerifier);
             const state = generateRandomString(43);
 
-            sessionStorage.setItem('vk_code_verifier', codeVerifier);
-            sessionStorage.setItem('vk_state', state);
+            // Сохраняем для проверки после редиректа
+            // localStorage переживает закрытие вкладки и доступен между вкладками
+            localStorage.setItem('vk_code_verifier', codeVerifier);
+            localStorage.setItem('vk_state', state);
 
             const url = VK_AUTH_URL + '?' +
                 'response_type=code' +
@@ -199,6 +205,7 @@
         async function handleCallback() {
             const params = getUrlParams();
 
+            // Ошибка от VK
             if (params.error) {
                 showStatus(
                     '<strong>Ошибка авторизации VK ID</strong><br>' +
@@ -209,6 +216,7 @@
                 return;
             }
 
+            // Нет кода — показываем кнопку авторизации
             if (!params.code) {
                 showStatus(
                     'Нажмите кнопку ниже, чтобы авторизоваться через VK ID.<br>' +
@@ -219,8 +227,10 @@
                 return;
             }
 
-            const savedState = sessionStorage.getItem('vk_state') || '';
-            if (params.state && params.state !== savedState) {
+            // Проверка state
+            // Если savedState пуст (новый браузер/очищено хранилище) — пропускаем проверку
+            const savedState = localStorage.getItem('vk_state') || '';
+            if (params.state && savedState && params.state !== savedState) {
                 showStatus(
                     '<strong>Ошибка безопасности</strong><br>' +
                     'Параметр state не совпадает. Возможна CSRF-атака.',
@@ -229,7 +239,12 @@
                 return;
             }
 
-            const codeVerifier = sessionStorage.getItem('vk_code_verifier') || '';
+            // Получаем code_verifier из localStorage
+            const codeVerifier = localStorage.getItem('vk_code_verifier') || '';
+
+            // Очищаем использованные значения
+            localStorage.removeItem('vk_code_verifier');
+            localStorage.removeItem('vk_state');
 
             const payload = {
                 code: params.code,
