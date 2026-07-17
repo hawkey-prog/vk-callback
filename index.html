@@ -158,7 +158,8 @@
                 '&redirect_uri=' + encodeURIComponent(REDIRECT_URI) +
                 '&state=' + state +
                 '&code_challenge=' + codeChallenge +
-                '&code_challenge_method=S256';
+                '&code_challenge_method=S256' +
+                '&scope=groups';
 
             window.location.href = url;
         }
@@ -241,6 +242,19 @@
 
             // Получаем code_verifier из localStorage
             const codeVerifier = localStorage.getItem('vk_code_verifier') || '';
+
+            // Если code_verifier пуст — авторизация запущена в новом браузере/инкогнито
+            if (!codeVerifier) {
+                showStatus(
+                    '<strong>⚠️ Нет code_verifier</strong><br>' +
+                    'Авторизация запущена в новом браузере или режиме инкогнито.<br>' +
+                    'PKCE-параметры не сохранились. Вернитесь на <a href="' + window.location.origin + window.location.pathname + '">начальную страницу</a>, ' +
+                    'очистите URL от параметров и нажмите кнопку авторизации заново.<br><br>' +
+                    'Важно: не открывайте ссылку в инкогнито и не переходите по ней из другого браузера.',
+                    'error'
+                );
+                return;
+            }
 
             // Очищаем использованные значения
             localStorage.removeItem('vk_code_verifier');
