@@ -92,6 +92,10 @@
         const SERVER_URL = 'https://89-108-78-99.sslip.io/vk/exchange-code';
         const VK_AUTH_URL = 'https://id.vk.ru/authorize';
 
+        // Scope: groups — для управления сообществами (groups.removeUser, groups.banUser)
+        // Пока право groups не одобрено поддержкой VK, будет возвращён только vkid.personal_info
+        const SCOPE = 'groups';
+
         function showStatus(html, type = '') {
             const status = document.getElementById('status');
             status.className = 'info ' + type;
@@ -148,7 +152,6 @@
             const state = generateRandomString(43);
 
             // Сохраняем для проверки после редиректа
-            // localStorage переживает закрытие вкладки и доступен между вкладками
             localStorage.setItem('vk_code_verifier', codeVerifier);
             localStorage.setItem('vk_state', state);
 
@@ -159,7 +162,7 @@
                 '&state=' + state +
                 '&code_challenge=' + codeChallenge +
                 '&code_challenge_method=S256' +
-                '&scope=groups';
+                '&scope=' + encodeURIComponent(SCOPE);
 
             window.location.href = url;
         }
