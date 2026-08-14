@@ -83,48 +83,135 @@ GitHub Pages отдаёт новую страницу: <https://hawkey-prog.gith
 
 ## Этап 4. Сервер
 
-На сервере `89.108.78.99`.
+Сервер уже развёрнут, python и venv на месте — нужно обновить код, завести
+секреты и починить сертификат. Всё выполняется по SSH под root на `89.108.78.99`.
+
+### 4.1. Обновить код
+
+Репозиторий публичный, поэтому файл берётся прямо с GitHub — так он всегда
+свежий и ничего не нужно копировать руками:
 
 ```bash
 systemctl stop vk-bot
-mkdir -p /opt/vk-bot && cd /opt/vk-bot
-cp app.py /opt/vk-bot/app.py          # из server/app.py этого репозитория
-cp .env.example /opt/vk-bot/.env      # затем заполнить
-python3 -m venv venv
-./venv/bin/pip install -r requirements.txt
+cd /opt/vk-bot
+cp app.py app.py.bak-$(date +%F)
+curl -fsSL -o app.py https://raw.githubusercontent.com/hawkey-prog/vk-callback/main/server/app.py
+./venv/bin/pip install -q flask requests python-dotenv gunicorn
+grep -c queue/list app.py
 ```
 
-Заполните `/opt/vk-bot/.env`. Два секрета сгенерируйте:
+Последняя команда должна напечатать число больше нуля — это признак, что
+скачалась новая версия с эндпоинтом для списка модерации.
+
+Старый `tokens.json` не трогаем: новая версия его не читает, но пусть лежит.
+
+### 4.2. Секреты
+
+Генерируем и записываем `.env` одной командой, чтобы секреты не пришлось
+переносить руками:
 
 ```bash
-openssl rand -hex 24   # для ADMIN_SECRET
-openssl rand -hex 24   # для BOT_SECRET
+cat > /opt/vk-bot/.env <<EOF
+STATE_FILE=/opt/vk-bot/state.json
+ADMIN_SECRET=$(python3 -c "import secrets;print(secrets.token_hex(24))")
+BOT_SECRET=$(python3 -c "import secrets;print(secrets.token_hex(24))")
+VK_GROUP_ID=236838246
+ALLOWED_ORIGIN=https://hawkey-prog.github.io
+VK_API_VERSION=5.199
+EOF
+chmod 600 /opt/vk-bot/.env
+cat /opt/vk-bot/.env
 ```
 
-`BOT_SECRET` обязателен: раньше `/vk/remove-user` был открыт всему интернету без
-всякой проверки, то есть кто угодно мог чистить ваше сообщество.
+Из напечатанного забираем:
 
-Служба и nginx:
+- `ADMIN_SECRET` — вводится в мини-приложении, блок 4, поле «Ключ доступа»;
+- `BOT_SECRET` — в BotHelp, заголовок `X-Bot-Secret`.
+
+`BOT_SECRET` обязателен: раньше `/vk/remove-user` был открыт всему интернету
+без всякой проверки — то есть чистить ваше сообщество мог кто угодно.
+
+### 4.3. Служба
 
 ```bash
-cp vk-bot.service /etc/systemd/system/vk-bot.service
-systemctl daemon-reload && systemctl enable --now vk-bot
+curl -fsSL -o /etc/systemd/system/vk-bot.service \
+  https://raw.githubusercontent.com/hawkey-prog/vk-callback/main/server/vk-bot.service
+systemctl daemon-reload
+systemctl enable --now vk-bot
+systemctl status vk-bot --no-pager -l | head -20
+curl -s http://127.0.0.1:5001/
+```
 
-cp nginx-vk-bot.conf /etc/nginx/sites-available/vk-bot
-ln -sf /etc/nginx/sites-available/vk-bot /etc/nginx/sites-enabled/vk-bot
+Последняя команда обязана ответить `VK moderator is running`. Если да —
+приложение живо, и дальше речь только о том, как до него добраться снаружи.
+
+Обратите внимание на `-w 1 --threads 4` в юните. Раньше стояло `-w 2`, но
+очередь лежит в одном файле, и два процесса начнут выдавать одни и те же
+задания дважды.
+
+### 4.4. Сертификат — сейчас это главная проблема
+
+Проверка снаружи (13.08.2026) показала: порт 443 открыт, TLS отвечает, но
+сертификат **самоподписанный** — пустые поля Subject и Issuer, ошибка
+`RemoteCertificateNameMismatch`. Порт 80 снаружи не отвечает вовсе.
+
+Браузер такой сертификат не примет, а значит мини-приложение до сервера
+не достучится: запрос упадёт молча, ещё до того как сервер его увидит.
+Прошлые проверки этого не показывали, потому что делались с `curl -k`,
+а этот флаг ровно такую проблему и прячет.
+
+Смотрим, что происходит:
+
+```bash
+certbot certificates
+nginx -T 2>/dev/null | grep -nE 'server_name|ssl_certificate|listen'
+ss -tlnp | grep -E ':(80|443)'
+ufw status 2>/dev/null || iptables -L -n | head -20
+```
+
+Что искать в выводе:
+
+- **`certbot certificates` пуст или сертификат просрочен** — настоящего
+  сертификата нет, его надо выпустить (см. ниже);
+- **в `nginx -T` есть `vk-bot.crt` или `snakeoil`** — nginx отдаёт
+  самоподписанный; надо переключить `ssl_certificate` на файлы Let's Encrypt;
+- **порт 80 не слушается или закрыт файрволом** — Let's Encrypt не сможет
+  подтвердить домен, выпуск сертификата не пройдёт.
+
+Выпуск или перевыпуск (порт 80 к этому моменту должен быть открыт):
+
+```bash
+ufw allow 80/tcp; ufw allow 443/tcp     # если ufw включён
+certbot --nginx -d 89-108-78-99.sslip.io
 nginx -t && systemctl reload nginx
 ```
 
-**Проверка — без `-k`.** Флаг `-k` отключает проверку сертификата и прячет ровно
-ту проблему, из-за которой браузер потом молча не достучится:
+Если certbot отказывается, а разбираться некогда — есть обход: развернуть
+прокси из папки `worker/` на Cloudflare. Он даёт заведомо валидный HTTPS,
+а до сервера идёт по обычному HTTP. Тогда в мини-приложении в поле «Адрес
+сервера» вписывается адрес воркера вместо `89-108-78-99.sslip.io`. Условие:
+до сервера должен доходить HTTP снаружи — то есть порт 80 всё равно нужен.
+
+### 4.5. Проверка — с домашнего компьютера, а не с сервера
+
+Проверять надо оттуда же, откуда пойдёт браузер, и **без `-k`**:
 
 ```bash
 curl https://89-108-78-99.sslip.io/
 ```
 
-Ответ `VK moderator is running` — годится. Ошибка сертификата — надо чинить
-Certbot, иначе мини-приложение до сервера не дойдёт (либо разворачивать
-запасной прокси из `worker/`).
+- `VK moderator is running` — сервер доступен, сертификат в порядке,
+  можно переходить к этапу 5;
+- ошибка сертификата — вернуться к 4.4, мини-приложение пока не заработает.
+
+Затем — что видит приложение:
+
+```bash
+curl -H "X-Admin-Secret: <ADMIN_SECRET>" https://89-108-78-99.sslip.io/vk/status
+```
+
+Ответ — JSON с полями `has_token`, `queue_pending`, `server_side_ok`.
+`403` означает, что секрет не совпал с тем, что в `.env`.
 
 ---
 
