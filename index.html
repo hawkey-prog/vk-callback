@@ -54,6 +54,7 @@
 <div class="card">
   <h2>1. Доступ</h2>
   <div id="authState" class="muted">Инициализация…</div>
+  <div id="diag" class="muted" style="margin-top:6px"></div>
   <div style="margin-top:12px">
     <button id="btnAuth">Выдать права groups</button>
     <button id="btnCheck" class="sec" disabled>Проверить токен</button>
@@ -101,7 +102,9 @@
   <pre id="log">—</pre>
 </div>
 
-<script src="https://unpkg.com/@vkontakte/vk-bridge/dist/browser.min.js"></script>
+<!-- Библиотека лежит рядом, а не на CDN: внешний хост может быть недоступен,
+     и тогда страница молча переставала работать. -->
+<script src="vk-bridge.js"></script>
 <script>
 (function () {
   'use strict';
@@ -137,14 +140,39 @@
 
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 
+  // В iframe VK доступ к хранилищу может быть закрыт, а обращение к нему —
+  // выбросить исключение и убить весь скрипт. Поэтому только через обёртки.
+  function lsGet(key) {
+    try { return localStorage.getItem(key) || ''; } catch (e) { return ''; }
+  }
+  function lsSet(key, value) {
+    try { localStorage.setItem(key, value); } catch (e) { /* приватный режим */ }
+  }
+
   function describeBridgeError(e) {
     if (!e) return 'неизвестная ошибка';
+    if (e instanceof Error) return e.message;
     var d = e.error_data || e;
     if (d.error_reason && d.error_reason.error_msg) {
       return 'VK API ' + d.error_reason.error_code + ': ' + d.error_reason.error_msg;
     }
-    return d.error_msg || d.error_description || d.error_reason || JSON.stringify(d);
+    if (typeof d.error_reason === 'string') return d.error_reason;
+    return d.error_msg || d.error_description || JSON.stringify(d);
   }
+
+  // Любой необработанный сбой должен быть виден на экране: раньше такая ошибка
+  // просто гасила обработчик, и кнопка выглядела нерабочей.
+  function fatal(what) {
+    log(what, 'err');
+    $('authState').innerHTML = '<span class="dot bad"></span>' + what;
+  }
+  window.onerror = function (msg, src, line) {
+    fatal('сбой скрипта: ' + msg + ' (строка ' + line + ')');
+    return false;
+  };
+  window.addEventListener('unhandledrejection', function (ev) {
+    fatal('сбой: ' + describeBridgeError(ev.reason));
+  });
 
   // --- VK API через мост: так запрос уходит из клиента VK и CORS не мешает ---
   function callApi(method, params) {
@@ -159,8 +187,16 @@
   // --- Шаг 1: права ---
 
   function requestToken(silent) {
+    if (!bridge) {
+      return Promise.reject(new Error(
+        'vk-bridge не загрузился — обновите страницу (Ctrl+F5)'));
+    }
     if (!APP_ID) {
       return Promise.reject(new Error('APP_ID не задан в index.html'));
+    }
+    if (typeof bridge.isEmbedded === 'function' && !bridge.isEmbedded()) {
+      return Promise.reject(new Error(
+        'страница открыта вне VK — права выдаются только на vk.com/app' + APP_ID));
     }
     return bridge.send('VKWebAppGetAuthToken', { app_id: APP_ID, scope: SCOPE })
       .then(function (r) {
@@ -233,7 +269,7 @@
           o.textContent = g.name + ' (' + g.id + ')';
           sel.appendChild(o);
         });
-        var saved = localStorage.getItem('vkmod_group');
+        var saved = lsGet('vkmod_group');
         if (saved) sel.value = saved;
         log('Загружено сообществ: ' + r.items.length);
       })
@@ -241,7 +277,7 @@
   }
 
   $('groupSelect').onchange = function () {
-    localStorage.setItem('vkmod_group', this.value);
+    lsSet('vkmod_group', this.value);
   };
 
   function currentGroupId() {
@@ -302,8 +338,8 @@
   }
 
   function pushToken() {
-    localStorage.setItem('vkmod_server', serverBase());
-    localStorage.setItem('vkmod_secret', serverSecret());
+    lsSet('vkmod_server', serverBase());
+    lsSet('vkmod_secret', serverSecret());
     if (!token) { $('serverState').innerHTML = '<span class="err">сначала выдайте права</span>'; return; }
     serverFetch('/vk/token', {
       method: 'POST',
@@ -388,13 +424,16 @@
 
   // --- Старт ---
 
-  $('serverUrl').value = localStorage.getItem('vkmod_server') || '';
-  $('adminSecret').value = localStorage.getItem('vkmod_secret') || '';
+  $('serverUrl').value = lsGet('vkmod_server');
+  $('adminSecret').value = lsGet('vkmod_secret');
 
-  if (!bridge) {
-    $('authState').innerHTML = '<span class="dot bad"></span>vk-bridge не загрузился';
-    return;
-  }
+  var embedded = !!bridge && (typeof bridge.isEmbedded !== 'function' || bridge.isEmbedded());
+
+  // Строка, по которой сразу видно, что именно не так, если что-то не так.
+  $('diag').textContent =
+    'vk-bridge: ' + (bridge ? 'загружен' : 'НЕ загружен') +
+    ' · внутри VK: ' + (embedded ? 'да' : 'нет') +
+    ' · APP_ID: ' + (APP_ID || 'не задан');
 
   function notInVk() {
     $('authState').innerHTML =
@@ -402,32 +441,42 @@
       'vk.com/app' + (APP_ID || '&lt;ID&gt;');
   }
 
-  // Вне клиента VK мост не отвечает вообще: без таймаута экран навсегда
-  // останется на «Инициализация», и непонятно, что делать.
-  if (typeof bridge.isEmbedded === 'function' && !bridge.isEmbedded()) {
+  if (!bridge) {
+    fatal('vk-bridge не загрузился: обновите страницу через Ctrl+F5');
+    return;
+  }
+  if (!embedded) {
     notInVk();
     return;
   }
 
+  // Внутри VK мост обычно отвечает мгновенно, но если ответа нет — экран не
+  // должен навсегда остаться на «Инициализация».
   var initialized = false;
-  var initTimer = setTimeout(function () { if (!initialized) notInVk(); }, 4000);
+  var initTimer = setTimeout(function () {
+    if (initialized) return;
+    initialized = true;
+    renderAuth();
+    $('authState').innerHTML =
+      '<span class="dot off"></span>мост не ответил на VKWebAppInit — ' +
+      'попробуйте нажать «Выдать права»';
+  }, 4000);
 
   bridge.send('VKWebAppInit')
     .then(function () {
+      if (initialized) return;
       initialized = true;
       clearTimeout(initTimer);
       renderAuth();
-      if (!APP_ID) {
-        $('authState').innerHTML =
-          '<span class="dot bad"></span>в index.html не заполнен APP_ID';
-      } else {
-        $('authState').innerHTML = '<span class="dot off"></span>готово, выдайте права';
-      }
+      $('authState').innerHTML = APP_ID
+        ? '<span class="dot off"></span>готово, выдайте права'
+        : '<span class="dot bad"></span>в index.html не заполнен APP_ID';
     })
-    .catch(function () {
+    .catch(function (e) {
+      if (initialized) return;
       initialized = true;
       clearTimeout(initTimer);
-      notInVk();
+      fatal('VKWebAppInit не прошёл: ' + describeBridgeError(e));
     });
 })();
 </script>
