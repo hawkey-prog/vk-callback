@@ -1,0 +1,16 @@
+[Unit]
+Description=VK community moderator
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/vk-bot
+EnvironmentFile=/opt/vk-bot/.env
+# Один воркер с потоками: очередь лежит в одном файле, несколько процессов
+# начнут выдавать мини-приложению одни и те же задания дважды.
+ExecStart=/opt/vk-bot/venv/bin/gunicorn -w 1 --threads 4 -b 127.0.0.1:5001 app:app
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

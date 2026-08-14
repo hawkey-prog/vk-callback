@@ -1,279 +1,435 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VK Auth — Получение токена</title>
-    <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            max-width: 600px;
-            margin: 50px auto;
-            padding: 20px;
-            background: #f5f5f5;
-        }
-        .container {
-            background: white;
-            padding: 30px;
-            border-radius: 12px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-        }
-        h1 {
-            font-size: 22px;
-            color: #333;
-        }
-        .info {
-            background: #f0f7ff;
-            border-left: 4px solid #0077ff;
-            padding: 15px;
-            margin: 20px 0;
-            border-radius: 4px;
-        }
-        .error {
-            background: #fff0f0;
-            border-left: 4px solid #ff4444;
-        }
-        .success {
-            background: #f0fff4;
-            border-left: 4px solid #28a745;
-        }
-        code {
-            background: #eee;
-            padding: 2px 6px;
-            border-radius: 3px;
-            word-break: break-all;
-        }
-        pre {
-            background: #1e1e1e;
-            color: #d4d4d4;
-            padding: 15px;
-            border-radius: 8px;
-            overflow-x: auto;
-            font-size: 13px;
-        }
-        button {
-            background: #0077ff;
-            color: white;
-            border: none;
-            padding: 14px 28px;
-            border-radius: 8px;
-            cursor: pointer;
-            font-size: 16px;
-            margin-top: 10px;
-        }
-        button:hover {
-            background: #005bb5;
-        }
-        .hidden {
-            display: none;
-        }
-        .small {
-            font-size: 13px;
-            color: #666;
-            margin-top: 15px;
-        }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Модератор сообщества</title>
+<style>
+  :root {
+    --bg: #f0f2f5; --card: #fff; --text: #000; --muted: #818c99;
+    --line: #e7e8ec; --blue: #2688eb; --red: #e64646; --green: #4bb34b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#19191a; --card:#232324; --text:#e1e3e6; --muted:#76787a; --line:#2f3033; }
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    margin: 0; padding: 12px; background: var(--bg); color: var(--text); font-size: 15px;
+  }
+  .card {
+    background: var(--card); border-radius: 12px; padding: 16px; margin-bottom: 12px;
+  }
+  h2 { font-size: 16px; margin: 0 0 12px; }
+  button {
+    background: var(--blue); color: #fff; border: 0; border-radius: 8px;
+    padding: 11px 16px; font-size: 15px; cursor: pointer; margin: 0 6px 6px 0;
+  }
+  button:disabled { opacity: .45; cursor: default; }
+  button.sec { background: var(--line); color: var(--text); }
+  button.danger { background: var(--red); }
+  input, select {
+    width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--bg); color: var(--text); font-size: 15px; margin-bottom: 8px;
+  }
+  label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .ok { color: var(--green); }
+  .err { color: var(--red); }
+  pre {
+    background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+    padding: 10px; font-size: 12px; overflow-x: auto; white-space: pre-wrap;
+    word-break: break-all; margin: 8px 0 0; max-height: 240px; overflow-y: auto;
+  }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+  .dot.on { background: var(--green); } .dot.off { background: var(--muted); }
+  .dot.bad { background: var(--red); }
+  details { margin-top: 8px; } summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+</style>
 </head>
 <body>
-    <div class="container">
-        <h1>🔑 Авторизация VK ID</h1>
-        <div id="status">Загрузка...</div>
-        <div id="action-block"></div>
 
-        <div id="manual-block" class="hidden">
-            <p>Если автоматическая отправка не сработала, скопируйте данные вручную:</p>
-            <pre id="manual-data"></pre>
-        </div>
-    </div>
+<div class="card">
+  <h2>1. Доступ</h2>
+  <div id="authState" class="muted">Инициализация…</div>
+  <div style="margin-top:12px">
+    <button id="btnAuth">Выдать права groups</button>
+    <button id="btnCheck" class="sec" disabled>Проверить токен</button>
+  </div>
+  <div id="authInfo"></div>
+</div>
 
-    <script>
-        const CLIENT_ID = '54634256';
-        const REDIRECT_URI = 'https://hawkey-prog.github.io/vk-callback/index.html';
-        const SERVER_URL = 'https://89-108-78-99.sslip.io/vk/exchange-code';
-        const VK_AUTH_URL = 'https://id.vk.ru/authorize';
+<div class="card">
+  <h2>2. Сообщество</h2>
+  <label>Управляемые сообщества</label>
+  <select id="groupSelect"><option value="">— сначала выдайте права —</option></select>
+  <label>или ID вручную</label>
+  <input id="groupManual" placeholder="236838246" inputmode="numeric">
+</div>
 
-        // Scope: groups — для управления сообществами (groups.removeUser, groups.banUser)
-        // Пока право groups не одобрено поддержкой VK, будет возвращён только vkid.personal_info
-        const SCOPE = 'groups';
+<div class="card">
+  <h2>3. Ручная проверка</h2>
+  <label>ID пользователя</label>
+  <input id="userId" placeholder="277162801" inputmode="numeric">
+  <div class="row">
+    <button id="btnRemove" class="danger" disabled>Удалить</button>
+    <button id="btnBan" class="danger" disabled>Заблокировать</button>
+  </div>
+  <div id="manualResult"></div>
+</div>
 
-        function showStatus(html, type = '') {
-            const status = document.getElementById('status');
-            status.className = 'info ' + type;
-            status.innerHTML = html;
+<div class="card">
+  <h2>4. Связь с сервером</h2>
+  <label>Адрес сервера</label>
+  <input id="serverUrl" placeholder="https://89-108-78-99.sslip.io">
+  <label>Ключ доступа (ADMIN_SECRET с сервера)</label>
+  <input id="adminSecret" type="password" placeholder="секрет из .env">
+  <button id="btnPush" class="sec">Сохранить и отправить токен</button>
+  <div id="serverState" class="muted" style="margin-top:8px">—</div>
+</div>
+
+<div class="card">
+  <h2>5. Обработка очереди</h2>
+  <p class="muted" style="margin-top:0">
+    Пока эта вкладка открыта, приложение забирает задания с сервера и выполняет их.
+    Токен обновляется автоматически. Закроете вкладку — очередь просто копится.
+  </p>
+  <button id="btnWorker" disabled>Запустить обработку</button>
+  <div id="workerState" class="muted"><span class="dot off"></span>остановлена</div>
+  <pre id="log">—</pre>
+</div>
+
+<script src="https://unpkg.com/@vkontakte/vk-bridge/dist/browser.min.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  // ID мини-приложения. Возьмите его из адреса vk.com/app<ID> и подставьте сюда.
+  var APP_ID = 54720386;
+
+  var API_VERSION = '5.199';
+  var SCOPE = 'groups';
+  // Пауза между вызовами VK API: лимит для токена пользователя — 3 запроса в секунду.
+  var API_DELAY_MS = 400;
+  var QUEUE_POLL_MS = 10000;
+  // Токен живёт час; обновляем заранее, чтобы обработка не спотыкалась.
+  var TOKEN_REFRESH_MS = 45 * 60 * 1000;
+
+  var bridge = window.vkBridge;
+  var token = null;
+  var tokenExpires = 0;
+  var workerTimer = null;
+  var refreshTimer = null;
+
+  var $ = function (id) { return document.getElementById(id); };
+
+  function log(msg, cls) {
+    var el = $('log');
+    var time = new Date().toTimeString().slice(0, 8);
+    var line = '[' + time + '] ' + msg;
+    if (el.textContent === '—') el.textContent = '';
+    el.textContent = line + '\n' + el.textContent;
+    if (el.textContent.length > 12000) el.textContent = el.textContent.slice(0, 12000);
+    if (cls === 'err') console.error(line); else console.log(line);
+  }
+
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+  function describeBridgeError(e) {
+    if (!e) return 'неизвестная ошибка';
+    var d = e.error_data || e;
+    if (d.error_reason && d.error_reason.error_msg) {
+      return 'VK API ' + d.error_reason.error_code + ': ' + d.error_reason.error_msg;
+    }
+    return d.error_msg || d.error_description || d.error_reason || JSON.stringify(d);
+  }
+
+  // --- VK API через мост: так запрос уходит из клиента VK и CORS не мешает ---
+  function callApi(method, params) {
+    var p = {};
+    for (var k in params) if (params.hasOwnProperty(k)) p[k] = params[k];
+    p.access_token = token;
+    p.v = API_VERSION;
+    return bridge.send('VKWebAppCallAPIMethod', { method: method, params: p })
+      .then(function (r) { return r.response; });
+  }
+
+  // --- Шаг 1: права ---
+
+  function requestToken(silent) {
+    if (!APP_ID) {
+      return Promise.reject(new Error('APP_ID не задан в index.html'));
+    }
+    return bridge.send('VKWebAppGetAuthToken', { app_id: APP_ID, scope: SCOPE })
+      .then(function (r) {
+        // VK возвращает только реально выданные права — проверяем, что groups среди них.
+        var granted = (r.scope || '').split(',').map(function (s) { return s.trim(); });
+        if (granted.indexOf('groups') === -1) {
+          throw new Error('VK не выдал право groups. Выдано: "' + (r.scope || 'ничего') + '"');
         }
+        token = r.access_token;
+        // expires приходит в секундах; 0 означает «без ограничения срока».
+        tokenExpires = r.expires ? r.expires * 1000 : 0;
+        if (!silent) log('Токен получен, scope: ' + r.scope);
+        renderAuth();
+        return r;
+      });
+  }
 
-        function showAction(html) {
-            document.getElementById('action-block').innerHTML = html;
+  function renderAuth() {
+    var st = $('authState');
+    if (!token) {
+      st.innerHTML = '<span class="dot off"></span>прав нет';
+    } else {
+      var until = tokenExpires
+        ? 'до ' + new Date(tokenExpires).toTimeString().slice(0, 5)
+        : 'без срока';
+      st.innerHTML = '<span class="dot on"></span>токен есть (' + until + ')';
+    }
+    var has = !!token;
+    $('btnCheck').disabled = !has;
+    $('btnRemove').disabled = !has;
+    $('btnBan').disabled = !has;
+    $('btnWorker').disabled = !has;
+  }
+
+  $('btnAuth').onclick = function () {
+    $('authInfo').innerHTML = '';
+    requestToken(false)
+      .then(loadGroups)
+      .catch(function (e) {
+        $('authInfo').innerHTML = '<p class="err">' + describeBridgeError(e) + '</p>';
+        log('Ошибка выдачи прав: ' + describeBridgeError(e), 'err');
+      });
+  };
+
+  $('btnCheck').onclick = function () {
+    callApi('groups.get', { filter: 'admin', extended: 1, count: 100 })
+      .then(function (r) {
+        $('authInfo').innerHTML =
+          '<p class="ok">Токен рабочий. Сообществ под управлением: ' + r.count + '</p>';
+      })
+      .catch(function (e) {
+        $('authInfo').innerHTML = '<p class="err">' + describeBridgeError(e) + '</p>';
+      });
+  };
+
+  // --- Шаг 2: сообщества ---
+
+  function loadGroups() {
+    return callApi('groups.get', { filter: 'admin', extended: 1, count: 100 })
+      .then(function (r) {
+        var sel = $('groupSelect');
+        sel.innerHTML = '';
+        if (!r.items.length) {
+          sel.innerHTML = '<option value="">— вы нигде не администратор —</option>';
+          return;
         }
+        r.items.forEach(function (g) {
+          var o = document.createElement('option');
+          o.value = g.id;
+          o.textContent = g.name + ' (' + g.id + ')';
+          sel.appendChild(o);
+        });
+        var saved = localStorage.getItem('vkmod_group');
+        if (saved) sel.value = saved;
+        log('Загружено сообществ: ' + r.items.length);
+      })
+      .catch(function (e) { log('groups.get: ' + describeBridgeError(e), 'err'); });
+  }
 
-        // Генерация случайной строки для state и code_verifier
-        function generateRandomString(length) {
-            const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
-            let result = '';
-            const array = new Uint8Array(length);
-            crypto.getRandomValues(array);
-            for (let i = 0; i < length; i++) {
-                result += chars[array[i] % chars.length];
-            }
-            return result;
-        }
+  $('groupSelect').onchange = function () {
+    localStorage.setItem('vkmod_group', this.value);
+  };
 
-        // PKCE: создание code_challenge из code_verifier
-        async function createCodeChallenge(codeVerifier) {
-            const encoder = new TextEncoder();
-            const data = encoder.encode(codeVerifier);
-            const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-            const hashArray = Array.from(new Uint8Array(hashBuffer));
-            // BASE64URL-ENCODE (без паддинга)
-            const base64 = btoa(String.fromCharCode(...hashArray));
-            return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-        }
+  function currentGroupId() {
+    var manual = $('groupManual').value.trim();
+    if (manual) return manual;
+    return $('groupSelect').value;
+  }
 
-        function getUrlParams() {
-            const params = new URLSearchParams(window.location.search);
-            return {
-                code: params.get('code'),
-                state: params.get('state'),
-                device_id: params.get('device_id'),
-                error: params.get('error'),
-                error_description: params.get('error_description'),
-            };
-        }
+  // --- Шаг 3: ручная проверка ---
 
-        function showManualData(payload) {
-            document.getElementById('manual-block').classList.remove('hidden');
-            document.getElementById('manual-data').textContent = JSON.stringify(payload, null, 2);
-        }
+  function moderate(action, groupId, userId) {
+    if (action === 'ban') {
+      return callApi('groups.ban', {
+        group_id: groupId, owner_id: userId, comment_visible: 0
+      });
+    }
+    return callApi('groups.removeUser', { group_id: groupId, user_id: userId });
+  }
 
-        async function startAuth() {
-            // Генерация PKCE параметров
-            const codeVerifier = generateRandomString(64);
-            const codeChallenge = await createCodeChallenge(codeVerifier);
-            const state = generateRandomString(43);
+  function manualAction(action) {
+    var g = currentGroupId(), u = $('userId').value.trim();
+    var box = $('manualResult');
+    if (!g || !u) { box.innerHTML = '<p class="err">Укажите сообщество и пользователя</p>'; return; }
+    box.innerHTML = '<p class="muted">Выполняю…</p>';
+    moderate(action, g, u)
+      .then(function (r) {
+        box.innerHTML = '<p class="ok">Готово, ответ VK: ' + JSON.stringify(r) + '</p>';
+        log(action + ' ' + u + ' в ' + g + ' — успешно');
+      })
+      .catch(function (e) {
+        var m = describeBridgeError(e);
+        box.innerHTML = '<p class="err">' + m + '</p>';
+        log(action + ' ' + u + ' — ' + m, 'err');
+      });
+  }
 
-            // Сохраняем для проверки после редиректа
-            localStorage.setItem('vk_code_verifier', codeVerifier);
-            localStorage.setItem('vk_state', state);
+  $('btnRemove').onclick = function () { manualAction('remove'); };
+  $('btnBan').onclick = function () { manualAction('ban'); };
 
-            const url = VK_AUTH_URL + '?' +
-                'response_type=code' +
-                '&client_id=' + CLIENT_ID +
-                '&redirect_uri=' + encodeURIComponent(REDIRECT_URI) +
-                '&state=' + state +
-                '&code_challenge=' + codeChallenge +
-                '&code_challenge_method=S256' +
-                '&scope=' + encodeURIComponent(SCOPE);
+  // --- Шаг 4: сервер ---
 
-            window.location.href = url;
-        }
+  function serverBase() { return $('serverUrl').value.trim().replace(/\/+$/, ''); }
+  function serverSecret() { return $('adminSecret').value.trim(); }
 
-        async function sendToServer(payload) {
-            showStatus(
-                '<strong>Код получен от VK ID</strong><br>' +
-                'Отправляю данные на сервер...<br>' +
-                '<code>' + SERVER_URL + '</code>'
-            );
+  function serverFetch(path, options) {
+    var base = serverBase();
+    if (!base) return Promise.reject(new Error('не задан адрес сервера'));
+    var opts = options || {};
+    opts.headers = opts.headers || {};
+    opts.headers['Content-Type'] = 'application/json';
+    opts.headers['X-Admin-Secret'] = serverSecret();
+    return fetch(base + path, opts).then(function (res) {
+      return res.json().then(function (body) {
+        if (!res.ok) throw new Error(body.error || ('HTTP ' + res.status));
+        return body;
+      }, function () { throw new Error('сервер вернул не JSON, HTTP ' + res.status); });
+    });
+  }
 
-            try {
-                const response = await fetch(SERVER_URL, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
+  function pushToken() {
+    localStorage.setItem('vkmod_server', serverBase());
+    localStorage.setItem('vkmod_secret', serverSecret());
+    if (!token) { $('serverState').innerHTML = '<span class="err">сначала выдайте права</span>'; return; }
+    serverFetch('/vk/token', {
+      method: 'POST',
+      body: JSON.stringify({
+        access_token: token,
+        expires: Math.floor(tokenExpires / 1000),
+        group_id: currentGroupId()
+      })
+    })
+      .then(function (r) {
+        var mode = r.server_side_ok
+          ? 'сервер может ходить в VK сам'
+          : 'сервер в VK не пускают, задания пойдут через это окно';
+        $('serverState').innerHTML = '<span class="ok">токен принят</span> — ' + mode;
+        log('Токен отправлен на сервер. Прямой доступ с сервера: ' + (r.server_side_ok ? 'да' : 'нет'));
+      })
+      .catch(function (e) {
+        $('serverState').innerHTML = '<span class="err">' + e.message + '</span>';
+        log('Отправка токена: ' + e.message, 'err');
+      });
+  }
 
-                const result = await response.json();
+  $('btnPush').onclick = pushToken;
 
-                if (!response.ok || result.error) {
-                    throw new Error(JSON.stringify(result, null, 2));
-                }
+  // --- Шаг 5: обработка очереди ---
 
-                showStatus(
-                    '<strong>✅ Успешно!</strong><br>' +
-                    'Сервер получил и сохранил токены VK.<br>' +
-                    'user_id: <code>' + (result.user_id || 'неизвестно') + '</code><br>' +
-                    'access_token: <code>' + (result.access_token_prefix || '***') + '...</code><br>' +
-                    'scope: <code>' + (result.scope || 'неизвестно') + '</code>',
-                    'success'
-                );
-            } catch (err) {
-                showStatus(
-                    '<strong>❌ Ошибка отправки на сервер</strong><br>' +
-                    'Проверьте, что сервер запущен и доступен.<br><br>' +
-                    'Ошибка:<br><pre>' + err.message + '</pre>',
-                    'error'
-                );
-                showManualData(payload);
-            }
-        }
+  function processQueue() {
+    var groupId = currentGroupId();
+    return serverFetch('/vk/queue?limit=20')
+      .then(function (r) {
+        var tasks = r.tasks || [];
+        if (!tasks.length) return;
+        log('Получено заданий: ' + tasks.length);
+        // Последовательно и с паузой — VK режет частые вызовы одного токена.
+        return tasks.reduce(function (chain, task) {
+          return chain.then(function () {
+            return moderate(task.action, task.group_id || groupId, task.user_id)
+              .then(function () {
+                log('✓ ' + task.action + ' ' + task.user_id);
+                return { id: task.id, ok: true, error: '' };
+              })
+              .catch(function (e) {
+                var m = describeBridgeError(e);
+                log('✗ ' + task.action + ' ' + task.user_id + ' — ' + m, 'err');
+                return { id: task.id, ok: false, error: m };
+              })
+              .then(function (result) {
+                return serverFetch('/vk/queue/ack', {
+                  method: 'POST', body: JSON.stringify(result)
+                }).catch(function (e) { log('ack: ' + e.message, 'err'); });
+              })
+              .then(function () { return sleep(API_DELAY_MS); });
+          });
+        }, Promise.resolve());
+      })
+      .catch(function (e) { log('очередь: ' + e.message, 'err'); });
+  }
 
-        async function handleCallback() {
-            const params = getUrlParams();
+  function setWorker(on) {
+    if (on) {
+      workerTimer = setInterval(processQueue, QUEUE_POLL_MS);
+      // Токен живёт час — продлеваем молча, диалог согласия VK больше не показывает.
+      refreshTimer = setInterval(function () {
+        requestToken(true)
+          .then(pushToken)
+          .catch(function (e) { log('обновление токена: ' + describeBridgeError(e), 'err'); });
+      }, TOKEN_REFRESH_MS);
+      processQueue();
+      $('workerState').innerHTML = '<span class="dot on"></span>работает';
+      $('btnWorker').textContent = 'Остановить обработку';
+      log('Обработка запущена');
+    } else {
+      clearInterval(workerTimer); clearInterval(refreshTimer);
+      workerTimer = refreshTimer = null;
+      $('workerState').innerHTML = '<span class="dot off"></span>остановлена';
+      $('btnWorker').textContent = 'Запустить обработку';
+      log('Обработка остановлена');
+    }
+  }
 
-            // Ошибка от VK
-            if (params.error) {
-                showStatus(
-                    '<strong>Ошибка авторизации VK ID</strong><br>' +
-                    'Код: <code>' + params.error + '</code><br>' +
-                    'Описание: ' + (params.error_description || 'неизвестно'),
-                    'error'
-                );
-                return;
-            }
+  $('btnWorker').onclick = function () { setWorker(!workerTimer); };
 
-            // Нет кода — показываем кнопку авторизации
-            if (!params.code) {
-                showStatus(
-                    'Нажмите кнопку ниже, чтобы авторизоваться через VK ID.<br>' +
-                    'После авторизации вы вернётесь сюда, и код будет отправлен на сервер.'
-                );
-                showAction('<button onclick="startAuth()">Авторизоваться через VK ID</button>' +
-                    '<p class="small">После нажатия вы перейдёте на страницу авторизации VK ID.</p>');
-                return;
-            }
+  // --- Старт ---
 
-            // Проверка state
-            // Если savedState пуст (новый браузер/очищено хранилище) — пропускаем проверку
-            const savedState = localStorage.getItem('vk_state') || '';
-            if (params.state && savedState && params.state !== savedState) {
-                showStatus(
-                    '<strong>Ошибка безопасности</strong><br>' +
-                    'Параметр state не совпадает. Возможна CSRF-атака.',
-                    'error'
-                );
-                return;
-            }
+  $('serverUrl').value = localStorage.getItem('vkmod_server') || '';
+  $('adminSecret').value = localStorage.getItem('vkmod_secret') || '';
 
-            // Получаем code_verifier из localStorage
-            const codeVerifier = localStorage.getItem('vk_code_verifier') || '';
+  if (!bridge) {
+    $('authState').innerHTML = '<span class="dot bad"></span>vk-bridge не загрузился';
+    return;
+  }
 
-            // Если code_verifier пуст — авторизация запущена в новом браузере/инкогнито
-            if (!codeVerifier) {
-                showStatus(
-                    '<strong>⚠️ Нет code_verifier</strong><br>' +
-                    'Авторизация запущена в новом браузере или режиме инкогнито.<br>' +
-                    'PKCE-параметры не сохранились. Вернитесь на <a href="' + window.location.origin + window.location.pathname + '">начальную страницу</a>, ' +
-                    'очистите URL от параметров и нажмите кнопку авторизации заново.<br><br>' +
-                    'Важно: не открывайте ссылку в инкогнито и не переходите по ней из другого браузера.',
-                    'error'
-                );
-                return;
-            }
+  function notInVk() {
+    $('authState').innerHTML =
+      '<span class="dot bad"></span>страница открыта не внутри VK — откройте ' +
+      'vk.com/app' + (APP_ID || '&lt;ID&gt;');
+  }
 
-            // Очищаем использованные значения
-            localStorage.removeItem('vk_code_verifier');
-            localStorage.removeItem('vk_state');
+  // Вне клиента VK мост не отвечает вообще: без таймаута экран навсегда
+  // останется на «Инициализация», и непонятно, что делать.
+  if (typeof bridge.isEmbedded === 'function' && !bridge.isEmbedded()) {
+    notInVk();
+    return;
+  }
 
-            const payload = {
-                code: params.code,
-                state: params.state || savedState,
-                code_verifier: codeVerifier,
-                device_id: params.device_id || ''
-            };
+  var initialized = false;
+  var initTimer = setTimeout(function () { if (!initialized) notInVk(); }, 4000);
 
-            await sendToServer(payload);
-        }
-
-        handleCallback();
-    </script>
+  bridge.send('VKWebAppInit')
+    .then(function () {
+      initialized = true;
+      clearTimeout(initTimer);
+      renderAuth();
+      if (!APP_ID) {
+        $('authState').innerHTML =
+          '<span class="dot bad"></span>в index.html не заполнен APP_ID';
+      } else {
+        $('authState').innerHTML = '<span class="dot off"></span>готово, выдайте права';
+      }
+    })
+    .catch(function () {
+      initialized = true;
+      clearTimeout(initTimer);
+      notInVk();
+    });
+})();
+</script>
 </body>
 </html>
