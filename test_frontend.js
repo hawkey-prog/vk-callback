@@ -13,15 +13,19 @@ function makeEl() {
            classList: { remove() {}, add() {} }, appendChild() {} };
 }
 
-function run(name, { bridge, storageThrows }) {
+function run(name, { bridge, storageThrows, search = '' }) {
   const els = {};
   const listeners = {};
   const sandbox = {
     console: { log() {}, error() {} },
     setTimeout, clearTimeout, setInterval, clearInterval,
-    Promise, JSON, Date, Error, fetch: () => Promise.reject(new Error('no net')),
+    Promise, JSON, Date, Error, URLSearchParams,
+    fetch: () => Promise.reject(new Error('no net')),
   };
   sandbox.window = sandbox;
+  sandbox.location = { search, origin: 'https://hawkey-prog.github.io', pathname: '/vk-callback/' };
+  // Верхнее окно отличается от текущего — так выглядит iframe VK.
+  sandbox.parent = { name: 'top' };
   sandbox.vkBridge = bridge;
   sandbox.localStorage = {
     getItem(k) { if (storageThrows) throw new Error('SecurityError'); return null; },
@@ -60,6 +64,8 @@ function check(name, cond, extra) {
   if (!cond) fails++;
 }
 
+const VK_LAUNCH = '?vk_app_id=54720386&vk_user_id=146275235&vk_is_app_user=1';
+
 console.log('\n1. vk-bridge не загрузился');
 let r = run('no bridge', { bridge: undefined, storageThrows: false });
 check('скрипт не упал', !r.threw, r.threw);
@@ -70,17 +76,23 @@ check('кнопка всё равно с обработчиком', r.clickable)
 console.log('\n2. Открыто вне VK');
 r = run('not embedded', { bridge: { isEmbedded: () => false, send: () => new Promise(() => {}) }, storageThrows: false });
 check('скрипт не упал', !r.threw, r.threw);
-check('диагностика: внутри VK нет', /внутри VK: нет/.test(r.diag), r.diag);
+check('диагностика: запуска из VK нет', /запуск из VK: нет/.test(r.diag), r.diag);
 check('статус зовёт открыть в VK', /не внутри VK/.test(r.state), r.state);
 
+console.log('\n2а. Запуск из VK виден независимо от моста');
+r = run('vk params, no bridge', { bridge: undefined, storageThrows: false, search: VK_LAUNCH });
+check('параметры VK распознаны', /запуск из VK: да, app 54720386/.test(r.diag), r.diag);
+check('iframe распознан', /iframe: да/.test(r.diag), r.diag);
+check('при этом видно, что мост не поднялся', /vk-bridge: НЕ загружен/.test(r.diag), r.diag);
+
 console.log('\n3. Хранилище закрыто (iframe VK)');
-r = run('storage throws', { bridge: okBridge, storageThrows: true });
+r = run('storage throws', { bridge: okBridge, storageThrows: true, search: VK_LAUNCH });
 check('скрипт не упал из-за localStorage', !r.threw, r.threw);
 check('APP_ID виден в диагностике', /APP_ID: 54720386/.test(r.diag), r.diag);
-check('внутри VK: да', /внутри VK: да/.test(r.diag), r.diag);
+check('запуск из VK распознан', /запуск из VK: да/.test(r.diag), r.diag);
 
 console.log('\n4. Нормальный запуск внутри VK');
-r = run('ok', { bridge: okBridge, storageThrows: false });
+r = run('ok', { bridge: okBridge, storageThrows: false, search: VK_LAUNCH });
 check('скрипт не упал', !r.threw, r.threw);
 check('мост загружен', /vk-bridge: загружен/.test(r.diag), r.diag);
 check('обработчики навешаны',
