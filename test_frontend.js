@@ -19,8 +19,12 @@ function run(name, { bridge, storageThrows, search = '' }) {
   const sandbox = {
     console: { log() {}, error() {} },
     setTimeout, clearTimeout, setInterval, clearInterval,
-    Promise, JSON, Date, Error, URLSearchParams,
-    fetch: () => Promise.reject(new Error('no net')),
+    Promise, JSON, Date, Error, URLSearchParams, encodeURIComponent,
+    fetch: (url, opts) => {
+      const reply = sandbox.__reply && sandbox.__reply(url, opts);
+      if (!reply) return Promise.reject(new Error('no net'));
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(reply) });
+    },
   };
   sandbox.window = sandbox;
   sandbox.location = { search, origin: 'https://hawkey-prog.github.io', pathname: '/vk-callback/' };
@@ -114,7 +118,63 @@ setTimeout(() => {
   setTimeout(() => {
     check('текст Error показан, а не {}', /окно закрыто/.test(r2.els.authInfo.innerHTML),
       r2.els.authInfo.innerHTML);
-    console.log('\n' + (fails ? 'ПРОВАЛЕНО: ' + fails : 'ВСЁ ЗЕЛЁНОЕ'));
-    process.exit(fails ? 1 : 0);
+    listTest();
   }, 50);
 }, 50);
+
+// 6. Список на модерацию: приходит с сервера, рисуется, отметка убирает строку.
+function listTest() {
+  console.log('\n6. Список на модерацию');
+  const r3 = run('list', { bridge: okBridge, storageThrows: false, search: VK_LAUNCH });
+  const acked = [];
+  r3.sandbox.__reply = (url, opts) => {
+    if (String(url).includes('/vk/queue/list')) {
+      return { total: 2, group_id: '236838246', tasks: [
+        { id: 'aaa1', action: 'remove', user_id: '277162801', reason: 'client-side mode', created: 1786000000 },
+        { id: 'bbb2', action: 'ban', user_id: '1002', reason: 'спам', created: 1786000100 },
+      ] };
+    }
+    if (String(url).includes('/vk/queue/ack')) {
+      acked.push(JSON.parse(opts.body));
+      return { status: 'ok' };
+    }
+    return null;
+  };
+  r3.els.serverUrl.value = 'https://89-108-78-99.sslip.io';
+
+  r3.els.btnLoadList.onclick();
+  setTimeout(() => {
+    const html = r3.els.list.innerHTML;
+    check('строки отрисованы', (html.match(/class="item"/g) || []).length === 2, html.slice(0, 200));
+    check('ссылка на пользователя ведёт в VK',
+      html.includes('https://vk.com/id277162801'), html.slice(0, 300));
+    check('видно действие «удалить»', /удалить/.test(html));
+    check('видно действие «заблокировать»', /заблокировать/.test(html));
+    check('счётчик очереди показан', /В очереди: 2/.test(r3.els.listState.textContent),
+      r3.els.listState.textContent);
+    check('ссылка на сообщество проставлена',
+      r3.els.linkGroup.href === 'https://vk.com/club236838246', r3.els.linkGroup.href);
+
+    // Нажимаем «Сделано» у первой строки.
+    r3.els.list.onclick({ target: {
+      getAttribute: (a) => (a === 'data-done' ? 'aaa1' : null), disabled: false } });
+    setTimeout(() => {
+      check('отметка ушла на сервер как выполненная',
+        acked.length === 1 && acked[0].id === 'aaa1' && acked[0].ok === true, acked);
+      check('строка исчезла из списка',
+        (r3.els.list.innerHTML.match(/class="item"/g) || []).length === 1);
+      check('счётчик уменьшился', /В очереди: 1/.test(r3.els.listState.textContent),
+        r3.els.listState.textContent);
+
+      // «Пропустить» должно уходить с ok=false и пояснением.
+      r3.els.list.onclick({ target: {
+        getAttribute: (a) => (a === 'data-skip' ? 'bbb2' : null), disabled: false } });
+      setTimeout(() => {
+        check('пропуск помечен как невыполненный',
+          acked.length === 2 && acked[1].ok === false && /вручную/.test(acked[1].error), acked);
+        console.log('\n' + (fails ? 'ПРОВАЛЕНО: ' + fails : 'ВСЁ ЗЕЛЁНОЕ'));
+        process.exit(fails ? 1 : 0);
+      }, 60);
+    }, 60);
+  }, 60);
+}

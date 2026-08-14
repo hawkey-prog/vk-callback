@@ -26,8 +26,19 @@
     padding: 11px 16px; font-size: 15px; cursor: pointer; margin: 0 6px 6px 0;
   }
   button:disabled { opacity: .45; cursor: default; }
-  button.sec { background: var(--line); color: var(--text); }
+  button.sec, .btn.sec { background: var(--line); color: var(--text); }
   button.danger { background: var(--red); }
+  a.btn {
+    display: inline-block; background: var(--blue); color: #fff; border-radius: 8px;
+    padding: 11px 16px; font-size: 15px; text-decoration: none; margin: 0 6px 6px 0;
+  }
+  .item {
+    border-top: 1px solid var(--line); padding: 10px 0;
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  }
+  .item .who { flex: 1; min-width: 160px; }
+  .item .who a { color: var(--blue); text-decoration: none; font-weight: 500; }
+  .item button { margin: 0; padding: 8px 12px; font-size: 14px; }
   input, select {
     width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px;
     background: var(--bg); color: var(--text); font-size: 15px; margin-bottom: 8px;
@@ -92,10 +103,24 @@
 </div>
 
 <div class="card">
-  <h2>5. Обработка очереди</h2>
+  <h2>5. Список на модерацию</h2>
   <p class="muted" style="margin-top:0">
-    Пока эта вкладка открыта, приложение забирает задания с сервера и выполняет их.
-    Токен обновляется автоматически. Закроете вкладку — очередь просто копится.
+    Кого бот поставил в очередь. Удаление делаете вы в интерфейсе VK, а здесь
+    отмечаете сделанное, чтобы человек не выпал из списка и не всплыл дважды.
+  </p>
+  <button id="btnLoadList">Обновить список</button>
+  <a id="linkGroup" class="btn sec" target="_blank" rel="noopener">Открыть сообщество</a>
+  <div id="listState" class="muted" style="margin-top:8px">—</div>
+  <div id="list"></div>
+</div>
+
+<div class="card">
+  <h2>6. Автоматическая обработка</h2>
+  <p class="muted" style="margin-top:0">
+    <strong>Сейчас не работает:</strong> VK отклоняет <code>groups.removeUser</code>
+    и <code>groups.ban</code> для не-standalone приложений. Кнопка оставлена,
+    чтобы включить обработку сразу, как только поддержка откроет доступ, —
+    менять ничего не придётся.
   </p>
   <button id="btnWorker" disabled>Запустить обработку</button>
   <div id="workerState" class="muted"><span class="dot off"></span>остановлена</div>
@@ -370,7 +395,108 @@
 
   $('btnPush').onclick = pushToken;
 
-  // --- Шаг 5: обработка очереди ---
+  // --- Шаг 5: список на модерацию ---
+
+  var listTasks = [];
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+    });
+  }
+
+  function whenText(unix) {
+    if (!unix) return '';
+    var d = new Date(unix * 1000);
+    return d.toLocaleDateString('ru-RU') + ' ' + d.toTimeString().slice(0, 5);
+  }
+
+  // Имена подтягиваем, если токен есть: список голых id неудобно разбирать
+  // глазами. Нет токена или метод не отдал — покажем id, это не критично.
+  function resolveNames(ids) {
+    if (!token || !ids.length) return Promise.resolve({});
+    return callApi('users.get', { user_ids: ids.slice(0, 100).join(','), fields: 'photo_50' })
+      .then(function (users) {
+        var map = {};
+        (users || []).forEach(function (u) {
+          map[u.id] = (u.first_name || '') + ' ' + (u.last_name || '');
+        });
+        return map;
+      })
+      .catch(function () { return {}; });
+  }
+
+  function renderList(names) {
+    var box = $('list');
+    if (!listTasks.length) {
+      box.innerHTML = '<p class="muted">Очередь пуста.</p>';
+      return;
+    }
+    box.innerHTML = listTasks.map(function (t) {
+      var name = names[t.user_id] ? escapeHtml(names[t.user_id]) : ('id' + t.user_id);
+      var what = t.action === 'ban' ? 'заблокировать' : 'удалить';
+      var meta = [what, t.reason, whenText(t.created)].filter(Boolean).join(' · ');
+      return '<div class="item">' +
+        '<div class="who">' +
+          '<a href="https://vk.com/id' + encodeURIComponent(t.user_id) + '" ' +
+          'target="_blank" rel="noopener">' + name + '</a>' +
+          '<div class="muted">' + escapeHtml(meta) + '</div>' +
+        '</div>' +
+        '<button data-done="' + t.id + '">Сделано</button>' +
+        '<button class="sec" data-skip="' + t.id + '">Пропустить</button>' +
+        '</div>';
+    }).join('');
+  }
+
+  function loadList() {
+    $('listState').textContent = 'Загружаю…';
+    return serverFetch('/vk/queue/list?limit=200')
+      .then(function (r) {
+        listTasks = r.tasks || [];
+        if (r.group_id) {
+          $('linkGroup').href = 'https://vk.com/club' + r.group_id;
+          if (!$('groupManual').value && !$('groupSelect').value) {
+            $('groupManual').value = r.group_id;
+          }
+        }
+        $('listState').textContent = 'В очереди: ' + r.total;
+        return resolveNames(listTasks.map(function (t) { return t.user_id; }));
+      })
+      .then(renderList)
+      .catch(function (e) {
+        $('listState').innerHTML = '<span class="err">' + escapeHtml(e.message) + '</span>';
+      });
+  }
+
+  $('btnLoadList').onclick = loadList;
+
+  $('list').onclick = function (ev) {
+    var el = ev.target;
+    var doneId = el.getAttribute && el.getAttribute('data-done');
+    var skipId = el.getAttribute && el.getAttribute('data-skip');
+    var id = doneId || skipId;
+    if (!id) return;
+    el.disabled = true;
+    serverFetch('/vk/queue/ack', {
+      method: 'POST',
+      body: JSON.stringify({
+        id: id, ok: !!doneId, error: doneId ? '' : 'пропущено вручную'
+      })
+    })
+      .then(function () {
+        log((doneId ? 'отмечено сделанным: ' : 'пропущено: ') + id);
+        listTasks = listTasks.filter(function (t) { return t.id !== id; });
+        $('listState').textContent = 'В очереди: ' + listTasks.length;
+        renderList({});
+        return resolveNames(listTasks.map(function (t) { return t.user_id; })).then(renderList);
+      })
+      .catch(function (e) {
+        el.disabled = false;
+        log('отметка не прошла: ' + e.message, 'err');
+      });
+  };
+
+  // --- Шаг 6: автоматическая обработка ---
 
   function processQueue() {
     var groupId = currentGroupId();

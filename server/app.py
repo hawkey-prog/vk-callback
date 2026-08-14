@@ -302,6 +302,29 @@ def get_queue():
         return jsonify({"tasks": taken})
 
 
+@app.route("/vk/queue/list", methods=["GET"])
+def list_queue():
+    """Показать очередь, ничего не захватывая.
+
+    Отличается от /vk/queue тем, что не помечает задания взятыми: список нужен
+    человеку для глазами-и-руками, а не обработчику, и пометка «в работе»
+    только мешала бы — задания молча возвращались бы в очередь по таймауту.
+    """
+    if not check_secret(ADMIN_SECRET, "X-Admin-Secret"):
+        return deny()
+    limit = min(int(request.args.get("limit", 100)), 500)
+
+    with _lock:
+        state = load_state()
+        release_stale(state)
+        save_state(state)
+        return jsonify({
+            "tasks": state["queue"][:limit],
+            "total": len(state["queue"]),
+            "group_id": state["group_id"] or DEFAULT_GROUP_ID,
+        })
+
+
 @app.route("/vk/queue/ack", methods=["POST"])
 def ack_task():
     if not check_secret(ADMIN_SECRET, "X-Admin-Secret"):

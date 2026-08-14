@@ -104,6 +104,37 @@ check("режим переключён на клиентский",
       j(c.get("/vk/status", headers=ADM))["server_side_ok"] is False)
 VK_MODE["fail_code"] = None
 
+print("\n6а. Просмотр очереди для ручной модерации")
+# Чистим состояние и кладём два задания.
+srv.save_state(dict(srv.EMPTY_STATE))
+VK_MODE["server_ok"] = False
+c.post("/vk/token", json={"access_token": "vk1.a.test", "expires": 0}, headers=ADM)
+c.post("/vk/remove-user", json={"user_id": 1001}, headers=BOT)
+c.post("/vk/ban-user", json={"user_id": 1002}, headers=BOT)
+
+r = c.get("/vk/queue/list", headers=ADM)
+lst = j(r)
+check("список отдан", r.status_code == 200 and lst["total"] == 2, lst)
+check("group_id отдан для ссылки", lst["group_id"] == "236838246", lst)
+check("действия различимы",
+      sorted(t["action"] for t in lst["tasks"]) == ["ban", "remove"], lst["tasks"])
+check("просмотр не захватывает задания",
+      all(t["status"] == "pending" for t in lst["tasks"]), lst["tasks"])
+check("после просмотра обработчик всё ещё может их взять",
+      len(j(c.get("/vk/queue", headers=ADM))["tasks"]) == 2)
+check("список без секрета отбит", c.get("/vk/queue/list").status_code == 403)
+
+# Отмечаем руками: одно сделано, одно пропущено.
+ids = [t["id"] for t in lst["tasks"]]
+c.post("/vk/queue/ack", json={"id": ids[0], "ok": True}, headers=ADM)
+c.post("/vk/queue/ack", json={"id": ids[1], "ok": False, "error": "пропущено вручную"}, headers=ADM)
+after = j(c.get("/vk/queue/list", headers=ADM))
+check("очередь опустела", after["total"] == 0, after)
+hist = j(c.get("/vk/status", headers=ADM))["history"]
+check("оба попали в историю", len(hist) >= 2, hist)
+check("статусы различаются",
+      sorted(h["status"] for h in hist[:2]) == ["done", "failed"], hist[:2])
+
 print("\n7. Прочее")
 check("протухший токен уводит в очередь",
       (c.post("/vk/token", json={"access_token": "t", "expires": 1}, headers=ADM),
