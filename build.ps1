@@ -13,13 +13,13 @@ if ($bridge -match '</script') {
     throw 'В библиотеке есть закрывающий тег script — встраивать нельзя.'
 }
 
-$html = Get-Content 'index.html' -Raw
+$html = Get-Content 'app.html' -Raw
 $pattern = '(?s)(<!-- BRIDGE:BEGIN -->).*?(<!-- BRIDGE:END -->)'
 if ($html -notmatch $pattern) { throw 'В index.html не найдены метки BRIDGE:BEGIN/END.' }
 
 $replacement = "`$1`n<script>`n$bridge`n</script>`n`$2"
 $html = [regex]::Replace($html, $pattern, $replacement)
-Set-Content -Path 'index.html' -Value $html -Encoding UTF8 -NoNewline
+Set-Content -Path 'app.html' -Value $html -Encoding UTF8 -NoNewline
 
-$size = [Math]::Round((Get-Item 'index.html').Length / 1KB, 1)
-Write-Output "vk-bridge встроен, index.html теперь $size КБ"
+$size = [Math]::Round((Get-Item 'app.html').Length / 1KB, 1)
+Write-Output "vk-bridge встроен, app.html теперь $size КБ"

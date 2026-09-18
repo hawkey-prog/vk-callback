@@ -1,11 +1,13 @@
 """Smoke-test app.py: очередь, авторизация, CORS, fallback — без реальных вызовов VK."""
-import json, os, sys, tempfile
+import json, os, sys, tempfile, time
 
 work = tempfile.mkdtemp()
 os.environ["STATE_FILE"] = os.path.join(work, "state.json")
 os.environ["ADMIN_SECRET"] = "adm"
 os.environ["BOT_SECRET"] = "bot"
 os.environ["VK_GROUP_ID"] = "236838246"
+os.environ["VK_CLIENT_ID"] = "54634256"
+os.environ["VK_REDIRECT_URI"] = "https://hawkey-prog.github.io/vk-callback/index.html"
 
 sys.path.insert(0, r"D:\OpenClawData\workspace-coder\vk-callback\server")
 import app as srv
@@ -135,10 +137,125 @@ check("оба попали в историю", len(hist) >= 2, hist)
 check("статусы различаются",
       sorted(h["status"] for h in hist[:2]) == ["done", "failed"], hist[:2])
 
+print("\n6б. VK ID: обмен кода, scope и обновление токена")
+# Подменяем VK ID так же, как VK API: сеть в тестах не трогаем.
+ID_CALLS = []
+ID_MODE = {"scope": "groups vkid.personal_info", "fail": None}
+
+def fake_vk_id_post(params):
+    ID_CALLS.append(dict(params))
+    if ID_MODE["fail"]:
+        return None, ID_MODE["fail"]
+    return {
+        "access_token": "vk2.a." + params["grant_type"],
+        "refresh_token": "rt_" + str(len(ID_CALLS)),
+        "expires_in": 3600,
+        "user_id": 146275235,
+        "scope": ID_MODE["scope"],
+    }, None
+
+srv.vk_id_post = fake_vk_id_post
+srv.save_state(dict(srv.EMPTY_STATE))
+VK_MODE["server_ok"] = True
+ID_CALLS.clear()
+
+r = c.post("/vk/exchange-code", json={"code": "abc", "code_verifier": "ver", "device_id": "d1"})
+body = j(r)
+check("код обменян", r.status_code == 200 and body["status"] == "ok", body)
+check("groups распознан в scope", body["has_groups"] is True, body)
+check("refresh-токен сохранён", body["has_refresh"] is True, body)
+check("обмен идёт как authorization_code",
+      ID_CALLS[0]["grant_type"] == "authorization_code", ID_CALLS[0])
+check("redirect_uri передан", "hawkey-prog" in ID_CALLS[0]["redirect_uri"], ID_CALLS[0])
+check("code_verifier передан", ID_CALLS[0]["code_verifier"] == "ver", ID_CALLS[0])
+check("обмен кода открыт без секрета — его делает браузер", r.status_code != 403)
+check("без code_verifier отказ",
+      c.post("/vk/exchange-code", json={"code": "abc"}).status_code == 400)
+
+st = j(c.get("/vk/status", headers=ADM))
+check("статус показывает scope", st["scope"] == "groups vkid.personal_info", st)
+check("статус подтверждает groups", st["has_groups"] is True, st)
+
+# Если VK выдал только личные данные — это обязано быть видно, а не «ок».
+ID_MODE["scope"] = "vkid.personal_info"
+r = c.post("/vk/exchange-code", json={"code": "abc2", "code_verifier": "ver"})
+check("отсутствие groups видно сразу", j(r)["has_groups"] is False, j(r))
+ID_MODE["scope"] = "groups vkid.personal_info"
+
+print("\n6в. Протухший токен обновляется сам")
+srv.save_state(dict(srv.EMPTY_STATE))
+c.post("/vk/exchange-code", json={"code": "abc", "code_verifier": "ver"})
+state = srv.load_state()
+state["expires"] = int(time.time()) - 10        # как будто час прошёл
+srv.save_state(state)
+ID_CALLS.clear()
+r = c.post("/vk/remove-user", json={"user_id": 277162801}, headers=BOT)
+check("задание выполнено, а не отложено", r.status_code == 200 and j(r)["via"] == "server", j(r))
+check("сервер сходил за обновлением",
+      any(x["grant_type"] == "refresh_token" for x in ID_CALLS), ID_CALLS)
+check("новый токен сохранён", srv.load_state()["access_token"].endswith("refresh_token"))
+
+print("\n6г. VK отозвал токен на ходу (код 5)")
+srv.save_state(dict(srv.EMPTY_STATE))
+c.post("/vk/exchange-code", json={"code": "abc", "code_verifier": "ver"})
+ID_CALLS.clear()
+CALLS.clear()
+attempts = {"n": 0}
+def once_expired(state, method, params):
+    if method == "groups.get":
+        return {"response": {"count": 1, "items": [1]}}, None
+    attempts["n"] += 1
+    if attempts["n"] == 1:
+        return {"error": {"error_code": 5, "error_msg": "token expired"}}, 5
+    return {"response": 1}, None
+srv.vk_call = once_expired
+r = c.post("/vk/remove-user", json={"user_id": 5}, headers=BOT)
+check("после обновления повтор удался", r.status_code == 200 and j(r)["status"] == "ok", j(r))
+check("обновление действительно запрашивалось",
+      any(x["grant_type"] == "refresh_token" for x in ID_CALLS), ID_CALLS)
+srv.vk_call = fake_vk_call
+
+print("\n6д. Обновление не удалось — задание не теряется")
+srv.save_state(dict(srv.EMPTY_STATE))
+c.post("/vk/exchange-code", json={"code": "abc", "code_verifier": "ver"})
+state = srv.load_state(); state["expires"] = int(time.time()) - 10; srv.save_state(state)
+ID_MODE["fail"] = "invalid_grant"
+r = c.post("/vk/remove-user", json={"user_id": 7}, headers=BOT)
+check("ушло в очередь, а не в ошибку", r.status_code == 202 and j(r)["status"] == "queued", j(r))
+check("причина названа", "invalid_grant" in j(r)["reason"], j(r))
+ID_MODE["fail"] = None
+
+print("\n6е. Список сообществ и доступ админской страницы")
+srv.save_state(dict(srv.EMPTY_STATE))
+c.post("/vk/exchange-code", json={"code": "abc", "code_verifier": "ver"})
+def groups_reply(state, method, params):
+    if method == "groups.get":
+        return {"response": {"count": 2, "items": [
+            {"id": 239099649, "name": "Курс", "screen_name": "adult_course"},
+            {"id": 237521740, "name": "Интуиция", "screen_name": "intuition_sixthsense"}]}}, None
+    return {"response": 1}, None
+srv.vk_call = groups_reply
+r = c.get("/vk/groups", headers=ADM)
+check("сообщества отданы", r.status_code == 200 and len(j(r)["groups"]) == 2, j(r))
+check("имя и id на месте", j(r)["groups"][0]["name"] == "Курс", j(r)["groups"][0])
+check("без секрета список закрыт", c.get("/vk/groups").status_code == 403)
+srv.vk_call = fake_vk_call
+
+check("админским секретом модерация тоже доступна",
+      c.post("/vk/remove-user", json={"user_id": 1}, headers=ADM).status_code in (200, 202))
+check("чужой секрет по-прежнему отбит",
+      c.post("/vk/remove-user", json={"user_id": 1},
+             headers={"X-Admin-Secret": "нет"}).status_code == 403)
+
 print("\n7. Прочее")
-check("протухший токен уводит в очередь",
-      (c.post("/vk/token", json={"access_token": "t", "expires": 1}, headers=ADM),
-       c.post("/vk/remove-user", json={"user_id": 5}, headers=BOT))[1].status_code == 202)
+# Протухший токен сам по себе не повод откладывать задание — сервер его
+# обновит (см. 6в). В очередь уходим, только когда обновлять нечем.
+_s = srv.load_state()
+_s["expires"] = int(time.time()) - 10
+_s["refresh_token"] = ""
+srv.save_state(_s)
+check("просроченный токен без refresh уводит в очередь",
+      c.post("/vk/remove-user", json={"user_id": 5}, headers=BOT).status_code == 202)
 check("user_id обязателен",
       c.post("/vk/remove-user", json={}, headers=BOT).status_code == 400)
 r = c.open("/vk/queue", method="OPTIONS")

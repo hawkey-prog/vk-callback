@@ -3,7 +3,7 @@
 const fs = require('fs');
 const vm = require('vm');
 
-const html = fs.readFileSync('D:/OpenClawData/workspace-coder/vk-callback/index.html', 'utf8');
+const html = fs.readFileSync('D:/OpenClawData/workspace-coder/vk-callback/app.html', 'utf8');
 const code = html.match(/<script>\s*\(function \(\)[\s\S]*?<\/script>/)[0]
   .replace(/^<script>/, '').replace(/<\/script>$/, '');
 

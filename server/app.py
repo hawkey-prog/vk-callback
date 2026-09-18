@@ -1,14 +1,19 @@
 """
 Сервер модерации VK-сообщества.
 
-Принимает задания от бота (BotHelp) и исполняет их одним из двух способов:
+Токен берётся через VK ID (OAuth 2.1 + PKCE): страница авторизации отдаёт сюда
+код, сервер меняет его на пару access + refresh и дальше обновляет сам. Права
+`groups` выданы приложению индивидуально по обращению в devsupport, поэтому на
+шаге авторизации их нужно явно запросить — иначе VK вернёт только
+`vkid.personal_info`.
 
-  1. напрямую — если VK принимает токен, присланный мини-приложением, с сервера;
-  2. через очередь — мини-приложение, открытое во вкладке VK, забирает задания
-     и вызывает методы у себя, где токен точно рабочий.
+Задания от бота (BotHelp) исполняются одним из двух способов:
 
-Способ выбирается автоматически при сохранении токена и перепроверяется при
-каждой ошибке доступа, так что переключение не требует вмешательства.
+  1. напрямую с сервера — основной режим;
+  2. через очередь, если VK почему-то не принимает токен с сервера: тогда
+     задания разбирает человек или мини-приложение (`app.html`).
+
+Режим определяется автоматически и перепроверяется при каждой ошибке доступа.
 """
 
 import json
@@ -32,6 +37,13 @@ BOT_SECRET = os.getenv("BOT_SECRET", "")
 DEFAULT_GROUP_ID = os.getenv("VK_GROUP_ID", "")
 ALLOWED_ORIGIN = os.getenv("ALLOWED_ORIGIN", "https://hawkey-prog.github.io")
 
+# VK ID: обмен кода на токен и его обновление.
+CLIENT_ID = os.getenv("VK_CLIENT_ID", "")
+REDIRECT_URI = os.getenv("VK_REDIRECT_URI", "")
+TOKEN_URL = os.getenv("VK_TOKEN_URL", "https://id.vk.ru/oauth2/auth")
+# Нужен только конфиденциальному приложению; у публичного остаётся пустым.
+SERVICE_TOKEN = os.getenv("VK_SERVICE_TOKEN", "")
+
 # Задание, взятое мини-приложением, но не подтверждённое за это время,
 # считается брошенным (закрыли вкладку) и возвращается в очередь.
 LEASE_TIMEOUT = 300
@@ -45,6 +57,10 @@ _lock = threading.Lock()
 
 EMPTY_STATE = {
     "access_token": "",
+    "refresh_token": "",
+    "device_id": "",
+    "scope": "",
+    "user_id": "",
     "expires": 0,
     "group_id": "",
     "server_side_ok": False,
@@ -86,10 +102,21 @@ def deny():
     return jsonify({"error": "forbidden"}), 403
 
 
+def may_moderate():
+    """Модерация доступна и боту, и админской странице.
+
+    Админский секрет строго старше ботовского, поэтому отдельный заголовок
+    для страницы проверки заводить незачем.
+    """
+    return (check_secret(BOT_SECRET, "X-Bot-Secret")
+            or check_secret(ADMIN_SECRET, "X-Admin-Secret"))
+
+
 @app.after_request
 def add_cors(response):
     response.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Secret"
+    response.headers["Access-Control-Allow-Headers"] = (
+        "Content-Type, X-Admin-Secret, X-Bot-Secret")
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     return response
 
@@ -130,6 +157,58 @@ def probe_server_side(state):
     """Проверяет, пускает ли VK этот токен с сервера. Метод требует scope groups."""
     _, code = vk_call(state, "groups.get", {"filter": "admin", "count": 1})
     return code is None
+
+
+# --- VK ID: токены -----------------------------------------------------------
+
+def store_tokens(state, result):
+    """Раскладывает ответ VK ID по состоянию.
+
+    Обновление инвалидирует прежнюю пару, поэтому и access, и refresh
+    перезаписываются вместе — держать старый refresh бессмысленно и вредно.
+    """
+    state["access_token"] = result.get("access_token", "")
+    state["refresh_token"] = result.get("refresh_token", "")
+    state["scope"] = result.get("scope", "")
+    state["token_updated"] = int(time.time())
+    expires_in = int(result.get("expires_in") or 0)
+    state["expires"] = int(time.time()) + expires_in if expires_in else 0
+    if result.get("user_id"):
+        state["user_id"] = str(result["user_id"])
+    if result.get("device_id"):
+        state["device_id"] = str(result["device_id"])
+
+
+def vk_id_post(params):
+    """Запрос к VK ID. Возвращает (результат, ошибка_строкой_или_None)."""
+    payload = dict(params)
+    if SERVICE_TOKEN:
+        payload["service_token"] = SERVICE_TOKEN
+    try:
+        response = requests.post(TOKEN_URL, data=payload, timeout=30)
+        result = response.json()
+    except Exception as exc:
+        return None, str(exc)
+    if "error" in result:
+        return None, result.get("error_description") or result.get("error")
+    return result, None
+
+
+def refresh_tokens(state):
+    """Обновляет пару по refresh_token. Возвращает текст ошибки или None."""
+    if not state.get("refresh_token"):
+        return "no refresh_token"
+    result, error = vk_id_post({
+        "grant_type": "refresh_token",
+        "client_id": CLIENT_ID,
+        "refresh_token": state["refresh_token"],
+        "device_id": state.get("device_id", ""),
+        "state": uuid.uuid4().hex + uuid.uuid4().hex[:11],
+    })
+    if error:
+        return error
+    store_tokens(state, result)
+    return None
 
 
 # --- Очередь -----------------------------------------------------------------
@@ -179,13 +258,18 @@ def moderate(action, user_id, group_id):
             return {"error": "group_id is required"}, 400
 
         if not state["access_token"]:
-            return {"error": "no token: откройте мини-приложение и отправьте токен"}, 409
+            return {"error": "no token: пройдите авторизацию на странице входа"}, 409
 
-        # Токена нет или он протух — сразу в очередь, мини-приложение разберёт.
+        # Токен живёт час, поэтому к этому моменту он протух в большинстве
+        # случаев — это норма, а не сбой: обновляем и работаем дальше.
         if not token_alive(state):
-            task = enqueue(state, action, user_id, group_id, "token expired")
+            error = refresh_tokens(state)
+            if error:
+                task = enqueue(state, action, user_id, group_id, "refresh failed: " + error)
+                save_state(state)
+                return {"status": "queued", "task_id": task["id"],
+                        "reason": "не удалось обновить токен: " + error}, 202
             save_state(state)
-            return {"status": "queued", "task_id": task["id"], "reason": "token expired"}, 202
 
         if not state["server_side_ok"]:
             task = enqueue(state, action, user_id, group_id, "server-side calls rejected")
@@ -199,6 +283,13 @@ def moderate(action, user_id, group_id):
             else {"group_id": group_id, "user_id": user_id}
         )
         result, code = vk_call(state, method, params)
+
+        # Код 5 — «токен протух». Он может прийти и при живом по нашим часам
+        # токене: VK отзывает ключ и по своим причинам. Одна попытка обновиться
+        # и повтор, прежде чем считать это отказом.
+        if code == 5:
+            if refresh_tokens(state) is None:
+                result, code = vk_call(state, method, params)
 
         if code is None:
             record = {
@@ -231,7 +322,7 @@ def index():
 
 @app.route("/vk/remove-user", methods=["POST"])
 def remove_user():
-    if not check_secret(BOT_SECRET, "X-Bot-Secret"):
+    if not may_moderate():
         return deny()
     data = request.get_json(silent=True) or {}
     user_id = data.get("user_id")
@@ -243,7 +334,7 @@ def remove_user():
 
 @app.route("/vk/ban-user", methods=["POST"])
 def ban_user():
-    if not check_secret(BOT_SECRET, "X-Bot-Secret"):
+    if not may_moderate():
         return deny()
     data = request.get_json(silent=True) or {}
     user_id = data.get("user_id")
@@ -254,6 +345,96 @@ def ban_user():
 
 
 # --- Эндпоинты для мини-приложения -------------------------------------------
+
+@app.route("/vk/exchange-code", methods=["POST"])
+def exchange_code():
+    """Меняет код авторизации VK ID на пару токенов.
+
+    Открыт без секрета: страницу авторизации открывает человек в браузере,
+    и заранее вписать туда секрет некуда. Подделать вызов нельзя — код
+    одноразовый, живёт 10 минут и проверяется вместе с code_verifier и
+    redirect_uri на стороне VK.
+    """
+    data = request.get_json(silent=True) or {}
+    code = data.get("code")
+    code_verifier = data.get("code_verifier")
+    if not code or not code_verifier:
+        return jsonify({"error": "code и code_verifier обязательны"}), 400
+    if not CLIENT_ID or not REDIRECT_URI:
+        return jsonify({"error": "на сервере не заданы VK_CLIENT_ID/VK_REDIRECT_URI"}), 500
+
+    result, error = vk_id_post({
+        "grant_type": "authorization_code",
+        "code": code,
+        "code_verifier": code_verifier,
+        "client_id": CLIENT_ID,
+        "redirect_uri": REDIRECT_URI,
+        "device_id": data.get("device_id", ""),
+        "state": data.get("state", ""),
+    })
+    if error:
+        return jsonify({"error": error}), 400
+
+    with _lock:
+        state = load_state()
+        store_tokens(state, result)
+        state["server_side_ok"] = probe_server_side(state)
+        save_state(state)
+        granted = state["scope"].split()
+        return jsonify({
+            "status": "ok",
+            "user_id": state["user_id"],
+            "scope": state["scope"],
+            # Главный признак успеха: без groups модерация работать не будет.
+            "has_groups": "groups" in granted,
+            "has_refresh": bool(state["refresh_token"]),
+            "expires_in": max(0, state["expires"] - int(time.time())) if state["expires"] else None,
+            "server_side_ok": state["server_side_ok"],
+            "queue": len(state["queue"]),
+        })
+
+
+@app.route("/vk/refresh", methods=["POST"])
+def refresh_endpoint():
+    if not check_secret(ADMIN_SECRET, "X-Admin-Secret"):
+        return deny()
+    with _lock:
+        state = load_state()
+        error = refresh_tokens(state)
+        if error:
+            return jsonify({"error": error}), 400
+        state["server_side_ok"] = probe_server_side(state)
+        save_state(state)
+        return jsonify({
+            "status": "ok",
+            "scope": state["scope"],
+            "has_groups": "groups" in state["scope"].split(),
+            "server_side_ok": state["server_side_ok"],
+        })
+
+
+@app.route("/vk/groups", methods=["GET"])
+def admin_groups():
+    """Сообщества, которыми управляет владелец токена."""
+    if not check_secret(ADMIN_SECRET, "X-Admin-Secret"):
+        return deny()
+    with _lock:
+        state = load_state()
+        if not state["access_token"]:
+            return jsonify({"error": "нет токена"}), 409
+        if not token_alive(state):
+            refresh_tokens(state)
+            save_state(state)
+        result, code = vk_call(state, "groups.get",
+                               {"filter": "admin", "extended": 1, "count": 100})
+        if code is not None:
+            return jsonify({"error": result["error"]}), 400
+        items = result.get("response", {}).get("items", [])
+        return jsonify({"groups": [
+            {"id": g.get("id"), "name": g.get("name"), "screen_name": g.get("screen_name")}
+            for g in items
+        ]})
+
 
 @app.route("/vk/token", methods=["POST"])
 def set_token():
@@ -355,6 +536,10 @@ def status():
             "has_token": bool(state["access_token"]),
             "token_alive": token_alive(state),
             "expires_in": max(0, int(state["expires"] - time.time())) if state["expires"] else None,
+            "scope": state["scope"],
+            "has_groups": "groups" in state["scope"].split(),
+            "has_refresh": bool(state["refresh_token"]),
+            "user_id": state["user_id"],
             "server_side_ok": state["server_side_ok"],
             "group_id": state["group_id"] or DEFAULT_GROUP_ID,
             "queue_pending": sum(1 for t in state["queue"] if t["status"] == "pending"),
