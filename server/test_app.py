@@ -176,6 +176,16 @@ st = j(c.get("/vk/status", headers=ADM))
 check("статус показывает scope", st["scope"] == "groups vkid.personal_info", st)
 check("статус подтверждает groups", st["has_groups"] is True, st)
 
+# device_id приходит только в адресе возврата; без него обновление токена
+# через час уйдёт с пустым значением и провалится.
+check("device_id из ответа VK сохранён", srv.load_state()["device_id"] == "d1",
+      srv.load_state()["device_id"])
+ID_CALLS.clear()
+_st = srv.load_state(); _st["expires"] = int(time.time()) - 10; srv.save_state(_st)
+c.post("/vk/remove-user", json={"user_id": 1}, headers=BOT)
+_refresh = [x for x in ID_CALLS if x["grant_type"] == "refresh_token"]
+check("device_id уходит при обновлении", _refresh and _refresh[0]["device_id"] == "d1", _refresh)
+
 # Если VK выдал только личные данные — это обязано быть видно, а не «ок».
 ID_MODE["scope"] = "vkid.personal_info"
 r = c.post("/vk/exchange-code", json={"code": "abc2", "code_verifier": "ver"})

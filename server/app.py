@@ -378,6 +378,11 @@ def exchange_code():
     with _lock:
         state = load_state()
         store_tokens(state, result)
+        # device_id приходит в адресе возврата и обязателен при обновлении
+        # токена. В ответе на обмен кода его может не быть, поэтому берём
+        # из запроса — иначе через час refresh уйдёт с пустым значением.
+        if data.get("device_id") and not state["device_id"]:
+            state["device_id"] = str(data["device_id"])
         state["server_side_ok"] = probe_server_side(state)
         save_state(state)
         granted = state["scope"].split()
